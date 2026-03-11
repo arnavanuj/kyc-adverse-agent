@@ -31,10 +31,6 @@ GLOBAL_TOP_EVIDENCE_CHUNKS = 2
 
 embedding_model: object | None = None
 _embedding_model_failed = False
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt")
 
 CLASSIFICATION_PROMPT = """You are an AML compliance analyst.
 Analyze the evidence below and determine if it contains adverse media.
