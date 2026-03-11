@@ -4,7 +4,10 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
-from ddgs import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:  # pragma: no cover - compatibility for older package layout
+    from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
