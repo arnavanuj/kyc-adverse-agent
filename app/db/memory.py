@@ -1,5 +1,6 @@
-﻿import json
+import json
 from datetime import datetime
+from pathlib import Path
 
 import aiosqlite
 
@@ -9,6 +10,7 @@ class MemoryStore:
         self.db_path = db_path
 
     async def init(self) -> None:
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
             await db.executescript(
                 """
@@ -136,3 +138,4 @@ class MemoryStore:
             if not row:
                 return None
             return json.loads(row[0])
+
