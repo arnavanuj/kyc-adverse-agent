@@ -10,10 +10,14 @@ import urllib.error
 import urllib.request
 
 import nltk
-from sentence_transformers import SentenceTransformer
 from nltk.tokenize import PunktSentenceTokenizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:  # pragma: no cover - optional at runtime with TF-IDF fallback
+    SentenceTransformer = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +29,7 @@ TOP_K_RELEVANT_CHUNKS = 3
 TOP_K_SENTENCES_PER_CHUNK = 3
 GLOBAL_TOP_EVIDENCE_CHUNKS = 2
 
-embedding_model: SentenceTransformer | None = None
+embedding_model: object | None = None
 _embedding_model_failed = False
 try:
     nltk.data.find("tokenizers/punkt")
@@ -67,11 +71,15 @@ Text:
 """
 
 
-def _get_embedding_model() -> SentenceTransformer | None:
+def _get_embedding_model() -> object | None:
     global embedding_model, _embedding_model_failed
     if embedding_model is not None:
         return embedding_model
     if _embedding_model_failed:
+        return None
+    if SentenceTransformer is None:
+        _embedding_model_failed = True
+        logger.warning("sentence-transformers import failed, using TF-IDF fallback")
         return None
     try:
         embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
