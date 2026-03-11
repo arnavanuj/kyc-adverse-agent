@@ -12,6 +12,7 @@ import urllib.request
 import nltk
 from sentence_transformers import SentenceTransformer
 from nltk.tokenize import PunktSentenceTokenizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,8 @@ TOP_K_RELEVANT_CHUNKS = 3
 TOP_K_SENTENCES_PER_CHUNK = 3
 GLOBAL_TOP_EVIDENCE_CHUNKS = 2
 
-embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+embedding_model: SentenceTransformer | None = None
+_embedding_model_failed = False
 try:
     nltk.data.find("tokenizers/punkt")
 except LookupError:
@@ -63,6 +65,21 @@ Subject:
 
 Text:
 """
+
+
+def _get_embedding_model() -> SentenceTransformer | None:
+    global embedding_model, _embedding_model_failed
+    if embedding_model is not None:
+        return embedding_model
+    if _embedding_model_failed:
+        return None
+    try:
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        return embedding_model
+    except Exception as exc:
+        _embedding_model_failed = True
+        logger.warning("Embedding model unavailable, using TF-IDF fallback: %s", exc)
+        return None
 
 
 def _default_finding(article: dict, rationale: str = "No major risk indicators detected.") -> dict:
@@ -173,9 +190,16 @@ def select_top_semantic_chunks(
     chunk_text = chunks[0]
     logger.info("EMBEDDING INPUT CHUNK PREVIEW:\n%s", chunk_text[:500])
     logger.info("STEP 5: Generating embeddings for %d chunks", len(chunks))
-    chunk_embeddings = embedding_model.encode(chunks)
-    query_embedding = embedding_model.encode(query)
-    logger.info("Query embedding sample: %s", query_embedding[:5])
+    model = _get_embedding_model()
+    if model is not None:
+        chunk_embeddings = model.encode(chunks)
+        query_embedding = model.encode(query)
+        logger.info("Query embedding sample: %s", query_embedding[:5])
+    else:
+        vectorizer = TfidfVectorizer()
+        matrix = vectorizer.fit_transform([query, *chunks]).toarray()
+        query_embedding = matrix[0]
+        chunk_embeddings = matrix[1:]
 
     logger.info("STEP 6: Computing cosine similarity for query: %s", query)
     scores = cosine_similarity([query_embedding], chunk_embeddings)[0]
@@ -202,8 +226,23 @@ def select_top_sentences_from_chunk(
     logger.info("STEP 7B: sentence filtering")
     logger.info("Total sentences: %d", len(sentences))
 
-    sentence_embeddings = embedding_model.encode(sentences)
-    scores = cosine_similarity([query_embedding], sentence_embeddings)[0]
+    if isinstance(query_embedding, str):
+        vectorizer = TfidfVectorizer()
+        matrix = vectorizer.fit_transform([query_embedding, *sentences]).toarray()
+        query_vector = matrix[0]
+        sentence_embeddings = matrix[1:]
+        scores = cosine_similarity([query_vector], sentence_embeddings)[0]
+    else:
+        model = _get_embedding_model()
+        if model is None:
+            vectorizer = TfidfVectorizer()
+            matrix = vectorizer.fit_transform(["Unknown subject", *sentences]).toarray()
+            query_vector = matrix[0]
+            sentence_embeddings = matrix[1:]
+            scores = cosine_similarity([query_vector], sentence_embeddings)[0]
+        else:
+            sentence_embeddings = model.encode(sentences)
+            scores = cosine_similarity([query_embedding], sentence_embeddings)[0]
 
     top_count = min(top_k_sentences, len(sentences))
     top_indices = scores.argsort()[-top_count:][::-1]
@@ -317,8 +356,13 @@ async def classify_many(articles: list[dict], user_query: str = "") -> list[dict
 
     try:
         query_text = user_query.strip() or "Unknown subject"
-        query_embedding = embedding_model.encode(query_text)
-        logger.info("Embedding optimization: query embedding computed once and reused across chunks")
+        model = _get_embedding_model()
+        if model is None:
+            query_embedding: object = query_text
+            logger.info("Embedding fallback enabled: using query text for TF-IDF scoring")
+        else:
+            query_embedding = model.encode(query_text)
+            logger.info("Embedding optimization: query embedding computed once and reused across chunks")
 
         all_evidence: list[dict] = []
         for article in articles:
