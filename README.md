@@ -24,7 +24,6 @@ An AI-powered adverse media screening system that automatically searches, scrape
 
 This project demonstrates several modern **AI engineering and system architecture patterns**:
 
-- **Retrieval-Augmented Processing (RAG-style pipeline)** for extracting relevant evidence from web data  
 - **Sentence-level semantic filtering** to reduce LLM input size and improve inference efficiency  
 - **Embedding-based similarity ranking** using transformer embeddings and cosine similarity  
 - **Agent-based modular architecture** separating search, scraping, risk analysis, and reporting components  
