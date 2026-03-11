@@ -5,6 +5,10 @@ app_module = pytest.importorskip("app.main")
 app = app_module.app
 
 
+def test_ci_sanity():
+    assert True
+
+
 def test_health_endpoint():
     with TestClient(app) as client:
         response = client.get('/health')
