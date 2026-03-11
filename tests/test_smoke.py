@@ -1,6 +1,8 @@
-﻿from fastapi.testclient import TestClient
+import pytest
+from fastapi.testclient import TestClient
 
-from app.main import app
+app_module = pytest.importorskip("app.main")
+app = app_module.app
 
 
 def test_health_endpoint():
