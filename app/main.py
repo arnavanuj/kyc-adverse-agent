@@ -41,7 +41,11 @@ async def startup() -> None:
     await memory.init()
 
     app.state.memory = memory
-    app.state.workflow = ScreeningWorkflow(memory)
+    try:
+        app.state.workflow = ScreeningWorkflow(memory)
+    except Exception as exc:
+        logging.exception("Workflow initialization failed: %s", exc)
+        app.state.workflow = None
 
 
 @app.get("/health")
@@ -57,6 +61,9 @@ async def run_screening(request: ScreeningRequest) -> ScreeningResponse:
 
     case_id = str(uuid4())
     await app.state.memory.create_case(case_id, request.full_name, status="in_progress")
+    workflow = getattr(app.state, "workflow", None)
+    if workflow is None:
+        raise HTTPException(status_code=503, detail="Workflow unavailable")
 
     initial_state: GraphState = {
         "case_id": case_id,
@@ -67,7 +74,7 @@ async def run_screening(request: ScreeningRequest) -> ScreeningResponse:
         "messages": [],
     }
 
-    output_state = await app.state.workflow.run(initial_state)
+    output_state = await workflow.run(initial_state)
 
     return ScreeningResponse(
         case_id=case_id,
