@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+
+# Env files
+.env
+
+# Tool/editor
+.vscode/
+
+# Logs and local runtime artifacts
+*.log
+api_response*.json
+server_stdout*.log
+server_stderr*.log
+server_stderr_clean*.log
+streamlit_stdout*.log
+streamlit_stderr*.log
+uvicorn_stdout*.log
+uvicorn_stderr*.log
+uvicorn_stderr_clean*.log
+
+# Local binaries/archives
+*.zip
+*.exe
+
+# Data cache
+data/*.db
+
+# Test cache
+.pytest_cache/

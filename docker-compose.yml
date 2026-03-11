@@ -1,0 +1,12 @@
+﻿services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=dev
+      - DB_PATH=/app/data/kyc_memory.db
+      - MAX_ARTICLES=20
+      - REFLECTION_MAX_LOOPS=1
+    volumes:
+      - ./data:/app/data
