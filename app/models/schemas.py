@@ -49,6 +49,13 @@ class ScreeningResponse(BaseModel):
     report: ComplianceReport | None = None
 
 
+class HumanReviewRequest(BaseModel):
+    human_review_action: str = Field(
+        pattern="^(approve_prompt_update|reject_update|modify_prompt_update)$"
+    )
+    human_modified_updates: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PersistedCase(BaseModel):
     case_id: str
     full_name: str

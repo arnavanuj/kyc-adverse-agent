@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time as time_module
 from collections.abc import Iterable
@@ -342,7 +343,7 @@ def render_response_object(response_data: dict[str, Any]) -> None:
 
     if isinstance(response_data.get("metadata"), dict):
         st.markdown("### Metadata")
-        st.table([{"field": k, "value": v} for k, v in response_data["metadata"].items()])
+        st.table([{"field": str(k), "value": str(v)} for k, v in response_data["metadata"].items()])
 
     if isinstance(response_data.get("report"), dict):
         st.markdown("### Report")
@@ -363,6 +364,125 @@ def render_response_friendly(response_data: Any) -> None:
         render_list(response_data)
         return
     st.write(response_data)
+
+
+def extract_case_context(response_data: Any) -> tuple[str | None, dict[str, Any] | None]:
+    if not isinstance(response_data, dict):
+        return None, None
+    case_id = response_data.get("case_id")
+    report = response_data.get("report")
+    if not isinstance(case_id, str) or not case_id.strip():
+        return None, None
+    if not isinstance(report, dict):
+        return case_id, None
+    return case_id, report
+
+
+def submit_human_review(
+    case_id: str,
+    action: str,
+    modified_updates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"human_review_action": action}
+    if modified_updates is not None:
+        payload["human_modified_updates"] = modified_updates
+    url = f"{API_BASE_URL}/screening/{quote(case_id, safe='')}/review"
+    response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return response.json()
+
+
+def render_human_review_panel(response_data: Any) -> None:
+    case_id, report = extract_case_context(response_data)
+    if not case_id or not isinstance(report, dict):
+        return
+
+    metadata = report.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    proposed_updates = metadata.get("proposed_prompt_updates", [])
+    if not isinstance(proposed_updates, list):
+        proposed_updates = []
+
+    st.session_state["case_id"] = case_id
+    st.session_state.setdefault("human_review_action", "pending")
+    st.session_state.setdefault(f"modified_updates_{case_id}", json.dumps(proposed_updates, indent=2))
+
+    st.markdown("---")
+    st.markdown("## Prompt Updates Proposed by AI")
+    if proposed_updates:
+        st.json(proposed_updates)
+    else:
+        st.info("No prompt updates proposed by AI.")
+
+    summary = metadata.get("reflection_human_summary")
+    if isinstance(summary, str) and summary.strip():
+        st.markdown("### Reflection Summary")
+        st.write(summary)
+
+    st.markdown("---")
+    st.markdown("## Human Review")
+
+    if not st.session_state.get("case_id"):
+        st.error("Cannot submit review because case_id is missing.")
+        return
+
+    col1, col2 = st.columns(2)
+    if col1.button("Approve Updates", key=f"approve_updates_{case_id}"):
+        try:
+            review_response = submit_human_review(case_id, "approve_prompt_update")
+            st.session_state["human_review_action"] = "approve_prompt_update"
+            st.session_state["last_review_message"] = "Prompt updates approved and applied successfully."
+            st.session_state["last_response_json"] = review_response
+            st.rerun()
+        except requests.RequestException as exc:
+            st.error(f"Failed to submit approval: {exc}")
+
+    if col2.button("Reject Updates", key=f"reject_updates_{case_id}"):
+        try:
+            review_response = submit_human_review(case_id, "reject_update")
+            st.session_state["human_review_action"] = "reject_update"
+            st.session_state["last_review_message"] = "Prompt updates rejected. Workflow continued without updates."
+            st.session_state["last_response_json"] = review_response
+            st.rerun()
+        except requests.RequestException as exc:
+            st.error(f"Failed to submit rejection: {exc}")
+
+    st.markdown("### Modify Updates")
+    edited_json = st.text_area(
+        "Modify Updates JSON",
+        value=st.session_state.get(f"modified_updates_{case_id}", "[]"),
+        height=220,
+        key=f"modify_updates_textarea_{case_id}",
+    )
+    st.session_state[f"modified_updates_{case_id}"] = edited_json
+
+    if st.button("Apply Modified Updates", key=f"apply_modified_updates_{case_id}"):
+        if not st.session_state.get("case_id"):
+            st.error("Cannot submit modified updates because case_id is missing.")
+            return
+        if not edited_json.strip():
+            st.error("Modified updates cannot be empty.")
+            return
+        try:
+            parsed = json.loads(edited_json)
+        except json.JSONDecodeError:
+            st.error("Modified updates must be valid JSON.")
+            return
+        if not isinstance(parsed, list) or not parsed:
+            st.error("Modified updates must be a non-empty JSON array.")
+            return
+        if not all(isinstance(item, dict) for item in parsed):
+            st.error("Each modified update must be a JSON object.")
+            return
+        try:
+            review_response = submit_human_review(case_id, "modify_prompt_update", parsed)
+            st.session_state["human_review_action"] = "modify_prompt_update"
+            st.session_state["last_review_message"] = "Modified prompt updates applied successfully."
+            st.session_state["last_response_json"] = review_response
+            st.rerun()
+        except requests.RequestException as exc:
+            st.error(f"Failed to submit modified updates: {exc}")
 
 
 def perform_request(
@@ -486,12 +606,28 @@ def main() -> None:
 
         if response.ok:
             render_response_friendly(response_json)
+            case_id, _ = extract_case_context(response_json)
+            if case_id:
+                st.session_state["case_id"] = case_id
+            st.session_state["last_response_json"] = response_json
         else:
             st.error("Request failed. See details below.")
             render_response_friendly(response_json)
+            case_id, _ = extract_case_context(response_json)
+            if case_id:
+                st.session_state["case_id"] = case_id
+            st.session_state["last_response_json"] = response_json
 
         with st.expander("Developer View (Raw JSON)", expanded=False):
             st.json(response_json)
+
+    if st.session_state.get("last_review_message"):
+        st.success(st.session_state["last_review_message"])
+        st.session_state["last_review_message"] = ""
+
+    cached_response = st.session_state.get("last_response_json")
+    if cached_response:
+        render_human_review_panel(cached_response)
 
 
 if __name__ == "__main__":

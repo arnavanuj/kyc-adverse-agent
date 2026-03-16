@@ -1,0 +1,12 @@
+Select evidence sentences that best represent adverse media allegations.
+Ensure severe indicators are retained when present: fraud, corruption, sanctions, money laundering, criminal investigations, financial misconduct, regulatory actions, and PEP exposure.
+Prefer factual statements over commentary.
+
+# Critic update
+Before finalizing top-k evidence, enforce inclusion of sentences containing fraud/corruption/sanctions/money-laundering/investigation cues when present.
+
+# Critic update
+Before finalizing top-k evidence, enforce inclusion of sentences containing sanctions, money_laundering, criminal_investigations, financial_misconduct, regulatory_actions, political_exposure.
+
+# Critic update
+Before finalizing top-k evidence, enforce inclusion of sentences containing regulatory_actions, political_exposure cues when present.

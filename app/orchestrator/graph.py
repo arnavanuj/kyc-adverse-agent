@@ -3,7 +3,9 @@
 from langgraph.graph import END, StateGraph
 
 from app.agents.compliance_guardrail_agent import ComplianceGuardrailAgent
+from app.agents.human_review_agent import HumanReviewAgent
 from app.agents.planner_agent import PlannerAgent
+from app.agents.prompt_improvement_agent import PromptImprovementAgent
 from app.agents.reflection_agent import ReflectionAgent
 from app.agents.report_generator_agent import ReportGeneratorAgent
 from app.agents.risk_classification_agent import RiskClassificationAgent
@@ -24,6 +26,8 @@ class ScreeningWorkflow:
         self.risk = RiskClassificationAgent()
         self.summary = SummarizationAgent()
         self.reflection = ReflectionAgent()
+        self.prompt_improvement = PromptImprovementAgent()
+        self.human_review = HumanReviewAgent()
         self.guardrail = ComplianceGuardrailAgent()
         self.reporter = ReportGeneratorAgent()
 
@@ -38,6 +42,8 @@ class ScreeningWorkflow:
         workflow.add_node("risk", self._risk_node)
         workflow.add_node("summarize", self._summarize_node)
         workflow.add_node("reflect", self._reflect_node)
+        workflow.add_node("prompt_improvement", self._prompt_improvement_node)
+        workflow.add_node("human_review", self._human_review_node)
         workflow.add_node("guardrail", self._guardrail_node)
         workflow.add_node("report", self._report_node)
 
@@ -54,15 +60,23 @@ class ScreeningWorkflow:
             self._reflection_router,
             {
                 "search": "search",
+                "prompt_improvement": "prompt_improvement",
+                "human_review": "human_review",
                 "guardrail": "guardrail",
             },
         )
 
+        workflow.add_edge("prompt_improvement", "human_review")
+        workflow.add_edge("human_review", "guardrail")
         workflow.add_edge("guardrail", "report")
         workflow.add_edge("report", END)
         return workflow
 
     def _reflection_router(self, state: GraphState) -> str:
+        if state.get("human_review_required"):
+            return "human_review"
+        if state.get("prompt_revision_required"):
+            return "prompt_improvement"
         if state.get("should_reflect_retry"):
             return "search"
         return "guardrail"
@@ -107,6 +121,16 @@ class ScreeningWorkflow:
         await self._persist_messages(out)
         return out
 
+    async def _prompt_improvement_node(self, state: GraphState) -> GraphState:
+        out = await self.prompt_improvement.run(state)
+        await self._persist_messages(out)
+        return out
+
+    async def _human_review_node(self, state: GraphState) -> GraphState:
+        out = await self.human_review.run(state)
+        await self._persist_messages(out)
+        return out
+
     async def _report_node(self, state: GraphState) -> GraphState:
         out = await self.reporter.run(state)
         await self.memory.save_report(out["case_id"], out["report"])
@@ -129,3 +153,16 @@ class ScreeningWorkflow:
 
     async def run(self, initial_state: GraphState) -> GraphState:
         return await self.graph.ainvoke(initial_state)
+
+    async def run_human_review(self, state: GraphState) -> GraphState:
+        out = await self.human_review.run(state)
+        await self._persist_messages(out)
+
+        out = await self.guardrail.run(out)
+        await self._persist_messages(out)
+
+        out = await self.reporter.run(out)
+        await self.memory.save_report(out["case_id"], out["report"])
+        await self.memory.update_case_status(out["case_id"], out.get("status", "completed"))
+        await self._persist_messages(out)
+        return out

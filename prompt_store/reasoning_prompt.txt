@@ -1,0 +1,6 @@
+Assess whether extracted evidence supports adverse-media classification.
+Explain the risk score using explicit evidence and severity calibration.
+State uncertainty when evidence is weak, contradictory, or incomplete.
+
+# Critic update
+Explain why each risk label is assigned using explicit evidence snippets and justify final risk_score calibration.

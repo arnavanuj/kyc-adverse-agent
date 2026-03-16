@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from app.core.settings import settings
 from app.db.memory import MemoryStore
-from app.models.schemas import ScreeningRequest, ScreeningResponse
+from app.models.schemas import HumanReviewRequest, ScreeningRequest, ScreeningResponse
 from app.orchestrator.graph import ScreeningWorkflow
 from app.orchestrator.state import GraphState
 from app.tools.guardrails import check_output_guardrails, validate_name_input
@@ -31,6 +31,38 @@ def _register_tools() -> None:
     registry.register("classify_many", classify_many)
     registry.register("summarize_findings", summarize_findings)
     registry.register("check_output_guardrails", check_output_guardrails)
+
+
+def _report_to_state(case_id: str, report: dict, review_action: str, modified_updates: list[dict]) -> GraphState:
+    metadata = report.get("metadata", {}) if isinstance(report.get("metadata"), dict) else {}
+    proposed_updates = metadata.get("proposed_prompt_updates", [])
+    if not isinstance(proposed_updates, list):
+        proposed_updates = []
+
+    approved_updates = metadata.get("approved_prompt_updates", [])
+    if not isinstance(approved_updates, list):
+        approved_updates = []
+
+    state: GraphState = {
+        "case_id": case_id,
+        "full_name": str(report.get("full_name", "")),
+        "findings": report.get("key_findings", []),
+        "summary": str(report.get("summary", "")),
+        "recommendations": report.get("recommendations", []),
+        "overall_score": float(report.get("overall_score", 0.0)),
+        "overall_risk": str(report.get("overall_risk", "low")),
+        "guardrail_flags": report.get("guardrail_flags", []),
+        "reflection_notes": report.get("reflection_notes", []),
+        "reflection_human_summary": str(metadata.get("reflection_human_summary", "")),
+        "proposed_prompt_updates": proposed_updates,
+        "approved_prompt_updates": approved_updates,
+        "human_review_required": bool(metadata.get("human_review_required", True)),
+        "prompt_revision_required": bool(metadata.get("prompt_revision_required", bool(proposed_updates))),
+        "human_review_action": review_action,
+        "human_modified_updates": modified_updates,
+        "messages": [],
+    }
+    return state
 
 
 @app.on_event("startup")
@@ -71,6 +103,7 @@ async def run_screening(request: ScreeningRequest) -> ScreeningResponse:
         "country": request.country,
         "date_of_birth": request.date_of_birth,
         "reflection_loop_count": 0,
+        "human_review_action": "pending",
         "messages": [],
     }
 
@@ -90,7 +123,43 @@ async def get_screening(case_id: str) -> ScreeningResponse:
         raise HTTPException(status_code=404, detail="Case not found")
 
     status = "completed"
-    if report.get("guardrail_flags"):
+    metadata = report.get("metadata", {}) if isinstance(report.get("metadata"), dict) else {}
+    if report.get("guardrail_flags") or metadata.get("human_review_required"):
         status = "needs_manual_review"
 
     return ScreeningResponse(case_id=case_id, status=status, report=report)
+
+
+@app.post("/screening/{case_id}/review", response_model=ScreeningResponse)
+async def submit_human_review(case_id: str, request: HumanReviewRequest) -> ScreeningResponse:
+    workflow = getattr(app.state, "workflow", None)
+    if workflow is None:
+        raise HTTPException(status_code=503, detail="Workflow unavailable")
+
+    report = await app.state.memory.get_report(case_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if request.human_review_action == "modify_prompt_update" and not request.human_modified_updates:
+        raise HTTPException(status_code=400, detail="human_modified_updates cannot be empty for modify_prompt_update")
+
+    state = _report_to_state(
+        case_id=case_id,
+        report=report,
+        review_action=request.human_review_action,
+        modified_updates=request.human_modified_updates,
+    )
+
+    output_state = await workflow.run_human_review(state)
+    logging.info(
+        "HUMAN_REVIEW_SUBMITTED case_id=%s action=%s applied_prompt_stages=%s review_required=%s",
+        case_id,
+        request.human_review_action,
+        [item.get("stage") for item in output_state.get("approved_prompt_updates", []) if isinstance(item, dict)],
+        output_state.get("human_review_required", False),
+    )
+    return ScreeningResponse(
+        case_id=case_id,
+        status=output_state.get("status", "completed"),
+        report=output_state.get("report"),
+    )

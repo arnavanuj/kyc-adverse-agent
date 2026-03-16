@@ -14,6 +14,11 @@ class ReportGeneratorAgent:
 
     async def run(self, state: GraphState) -> GraphState:
         logger.info("STEP 10: Generating final risk report")
+        state["proposed_prompt_updates"] = state.get("proposed_prompt_updates", [])
+        state["human_review_required"] = bool(
+            state.get("human_review_required", False) or state.get("human_review_action", "pending") == "pending"
+        )
+
         report = ComplianceReport(
             case_id=state["case_id"],
             full_name=state["full_name"],
@@ -28,10 +33,19 @@ class ReportGeneratorAgent:
             metadata={
                 "article_count": len(state.get("articles", [])),
                 "search_result_count": len(state.get("search_results", [])),
+                "reflection_status": state.get("reflection_feedback", {}).get("reflection_status", ""),
+                "reflection_confidence": state.get("reflection_confidence", 0.0),
+                "prompt_revision_required": state.get("prompt_revision_required", False),
+                "human_review_required": state.get("human_review_required", False),
+                "reflection_human_summary": state.get("reflection_human_summary", ""),
+                "proposed_prompt_updates": state.get("proposed_prompt_updates", []),
+                "approved_prompt_updates": state.get("approved_prompt_updates", []),
+                "human_review_action": state.get("human_review_action", "pending"),
             },
         )
 
         state["report"] = report.model_dump(mode="json")
+        state["case_id"] = state.get("case_id", report.case_id)
         state.setdefault("messages", []).append(
             {
                 "from": self.name,
@@ -40,4 +54,16 @@ class ReportGeneratorAgent:
                 "payload": {"status": state.get("status", "completed")},
             }
         )
+        if state.get("human_review_required", False):
+            state.setdefault("messages", []).append(
+                {
+                    "from": self.name,
+                    "to": "human_review_agent",
+                    "type": "human_review_required",
+                    "payload": {
+                        "case_id": state["case_id"],
+                        "proposed_updates": state.get("proposed_prompt_updates", []),
+                    },
+                }
+            )
         return state

@@ -1,0 +1,3 @@
+Extract concise adverse-media facts about the subject from selected evidence sentences.
+Prioritize explicit allegations, legal actions, and financial crime indicators.
+Avoid generic or unrelated background details.

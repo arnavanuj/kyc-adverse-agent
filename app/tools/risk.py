@@ -13,6 +13,7 @@ import nltk
 from nltk.tokenize import PunktSentenceTokenizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from app.tools.prompt_store import load_prompt_text
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -32,30 +33,23 @@ GLOBAL_TOP_EVIDENCE_CHUNKS = 2
 embedding_model: object | None = None
 _embedding_model_failed = False
 
-CLASSIFICATION_PROMPT = """You are an AML compliance analyst.
-Analyze the evidence below and determine if it contains adverse media.
-
-Return STRICT JSON with the following fields:
+DEFAULT_REASONING_GUIDANCE = (
+    "Analyze the evidence below and determine if it contains adverse media."
+)
+CLASSIFICATION_OUTPUT_SCHEMA = """Return STRICT JSON with the following fields:
 - risk_labels (list)
 - risk_score (0 to 1)
 - rationale
 - evidence_snippets (list)
-- sources (list)
+- sources (list)"""
 
-Evidence:
-{article_text}"""
-
-COMPRESSION_PROMPT = """Extract the key adverse media facts about the subject from the text below.
-Return 1-2 sentences only.
-
-Subject:
-{subject_query}
-
-Evidence sentences:
-{evidence_sentences}
-
-Task:
-Summarize whether these sentences contain adverse media about the subject."""
+DEFAULT_COMPRESSION_GUIDANCE = (
+    "Extract the key adverse media facts about the subject from the text below."
+)
+DEFAULT_EVIDENCE_SELECTION_GUIDANCE = (
+    "Select evidence sentences that best represent adverse media allegations, "
+    "prioritizing severe indicators when present."
+)
 
 LEGACY_COMPRESSION_PROMPT_PREFIX = """Extract the key adverse media facts about the subject from the text below.
 Return 1-2 sentences only.
@@ -84,6 +78,11 @@ def _get_embedding_model() -> object | None:
         _embedding_model_failed = True
         logger.warning("Embedding model unavailable, using TF-IDF fallback: %s", exc)
         return None
+
+
+def _load_stage_guidance(stage: str, fallback: str) -> str:
+    prompt_text = load_prompt_text(stage).strip()
+    return prompt_text if prompt_text else fallback
 
 
 def _default_finding(article: dict, rationale: str = "No major risk indicators detected.") -> dict:
@@ -271,8 +270,7 @@ def _collect_article_evidence(article: dict, user_query: str, query_embedding: o
     if not chunks:
         return []
 
-    subject_query = user_query.strip() or article.get("title", "").strip() or "Unknown subject"
-    relevant_chunks, top_scores = select_top_semantic_chunks(chunks, subject_query, top_k=TOP_K_RELEVANT_CHUNKS)
+    relevant_chunks, top_scores = select_top_semantic_chunks(chunks, user_query, top_k=TOP_K_RELEVANT_CHUNKS)
 
     evidence_items: list[dict] = []
     for chunk, score in zip(relevant_chunks, top_scores):
@@ -297,13 +295,19 @@ def _collect_article_evidence(article: dict, user_query: str, query_embedding: o
 
 
 def _build_compression_prompt(user_query: str, evidence_item: dict) -> str:
+    guidance = _load_stage_guidance("compression_prompt", DEFAULT_COMPRESSION_GUIDANCE)
     sentences = evidence_item.get("sentences", [])
     sentence_block = "\n".join(f"- {sentence}" for sentence in sentences if sentence.strip())
     if not sentence_block:
         sentence_block = "- No relevant sentences extracted."
-    return COMPRESSION_PROMPT.format(
-        subject_query=user_query.strip() or "Unknown subject",
-        evidence_sentences=sentence_block,
+    return "\n\n".join(
+        [
+            guidance,
+            "Return 1-2 sentences only.",
+            f"Subject:\n{user_query.strip() or 'Unknown subject'}",
+            f"Evidence sentences:\n{sentence_block}",
+            "Task:\nSummarize whether these sentences contain adverse media about the subject.",
+        ]
     )
 
 
@@ -337,7 +341,20 @@ def _build_compressed_context(compressed_evidence: list[dict]) -> str:
 
 
 def _build_classification_prompt(packed_context: str) -> str:
-    return CLASSIFICATION_PROMPT.format(article_text=packed_context)
+    reasoning_guidance = _load_stage_guidance("reasoning_prompt", DEFAULT_REASONING_GUIDANCE)
+    return "\n\n".join(
+        [
+            "You are an AML compliance analyst.",
+            reasoning_guidance,
+            CLASSIFICATION_OUTPUT_SCHEMA,
+            f"Evidence:\n{packed_context}",
+        ]
+    )
+
+
+def _build_evidence_selection_query(subject_query: str) -> str:
+    evidence_guidance = _load_stage_guidance("evidence_selection_prompt", DEFAULT_EVIDENCE_SELECTION_GUIDANCE)
+    return "\n\n".join([subject_query.strip() or "Unknown subject", evidence_guidance])
 
 
 def _ollama_classify_aggregated_context(packed_context: str) -> dict:
@@ -360,17 +377,18 @@ async def classify_many(articles: list[dict], user_query: str = "") -> list[dict
 
     try:
         query_text = user_query.strip() or "Unknown subject"
+        evidence_selection_query = _build_evidence_selection_query(query_text)
         model = _get_embedding_model()
         if model is None:
-            query_embedding: object = query_text
+            query_embedding: object = evidence_selection_query
             logger.info("Embedding fallback enabled: using query text for TF-IDF scoring")
         else:
-            query_embedding = model.encode(query_text)
+            query_embedding = model.encode(evidence_selection_query)
             logger.info("Embedding optimization: query embedding computed once and reused across chunks")
 
         all_evidence: list[dict] = []
         for article in articles:
-            all_evidence.extend(_collect_article_evidence(article, user_query, query_embedding))
+            all_evidence.extend(_collect_article_evidence(article, evidence_selection_query, query_embedding))
 
         logger.info("STEP 8A: Aggregating evidence across articles")
         ranked_evidence = sorted(all_evidence, key=lambda item: item.get("similarity_score", 0.0), reverse=True)

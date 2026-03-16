@@ -13,6 +13,10 @@ class ComplianceGuardrailAgent:
 
         if not state.get("articles"):
             flags.append("No article content collected.")
+        if state.get("human_review_required"):
+            flags.append("Human review pending for reflection critique or prompt update.")
+        if state.get("prompt_revision_required"):
+            flags.append("Prompt revision recommended by reflection agent.")
 
         state["guardrail_flags"] = flags
         state["status"] = "needs_manual_review" if flags else "completed"
